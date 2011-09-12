@@ -1,0 +1,27 @@
+Start a program N-M times in parallel by running it it each A-B seconds
+# $Header$
+#
+# $Log$
+# Revision 1.1  2011-09-12 15:14:18  tino
+# first version
+#
+
+<b>timestart N M A B program</b> tries to keep N running programs in parallel.
+The interval between program execution is adjusted accordingly.
+
+timestart keeps some bounds, it never executes more than M programs in parallel
+and the interval is kept between A and B seconds.
+
+If the program not returns 0 (or true), the next invocation is delayed B seconds,
+but this has no influence on the calculated interval.
+
+Also 3 signals are honored:
+SIGHUP makes the program terminate after all childs are finished,
+SIGUSR1 halts the spawning of new programs and
+SIGUSR2 continues and immediately spawns a new program.
+
+Note that timestart will run more than M programs if SIGUSR2 is sent more often,
+as these signals are meant to help in debugging.  Signals to parent processes
+can be send easily using $PPID, so the child tasks can control timestart a bit.
+
+The debug output of timestart is written to FD3 if this FD is redirected somewhere.
