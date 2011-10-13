@@ -1,0 +1,5 @@
+2011-10-13  Valentin Hilbig  <tino@zoo.03.softkill.net>
+
+	* timestart.c (sa): bug, wrong way to call memset, how was this possible?
+	(main): better fork() timing when processing signals
+
