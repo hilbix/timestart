@@ -1,5 +1,10 @@
 $Header$
 
+Note:
+
+This is somewhat optimized for size.  "make static" creates (stripped)
+a smaller executable than the shared library version.
+
 Example use:
 
 You have a CMS with a frontpage which shall be updated each 10 minutes.
@@ -78,6 +83,9 @@ to be able to run a script even when the limit on the commandline is
 reached.  So put that into the application logic which sends the signal.
 
 # $Log$
+# Revision 1.2  2011-10-13 00:14:14  tino
+# Bugfix and minor improvements.  Statistics with SIGWINCH added
+#
 # Revision 1.1  2011-09-12 15:14:18  tino
 # first version
 #

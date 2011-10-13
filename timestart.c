@@ -3,9 +3,11 @@
  * This Works is placed under the terms of the Copyright Less License,
  * see file COPYRIGHT.CLL.  USE AT OWN RISK, ABSOLUTELY NO WARRANTY.
  *
+ * This source is optimized for diet.
+ *
  * $Log$
- * Revision 1.1  2011-09-12 15:14:18  tino
- * first version
+ * Revision 1.2  2011-10-13 00:14:16  tino
+ * Bugfix and minor improvements.  Statistics with SIGWINCH added
  *
  */
 
@@ -21,11 +23,27 @@
 
 #include "timestart_version.h"
 
+#if 0
+#define	D(X)
+#endif
+
+#ifndef D
+#define	D(X) debug(X)
+#endif
+
+static void
+debug(const char *s)
+{
+  write(1, s, strlen(s));
+  write(1, "\n\r", 2);
+}
+
 #define	MAXPIDS	1024
 
 struct childs
   {
     struct childs	*next;
+    time_t		start;
     pid_t		pid;
   } *childs = 0, **lastchl= &childs;
 static unsigned long nchilds;
@@ -34,7 +52,18 @@ static char	iobuf[1024];
 static int	iofill;
 static int	iofd;
 
-#define	USAGE	"Usage: timestart [options] min max fromsec tosec program [args..] 3>log\r\n"		\
+static int	stat_forks, stat_success, stat_kill, stat_oops, stat_timeouts, stat_waits, stat_no_childs, stat_full_childs, stat_max_childs;
+static time_t	stat_start;
+
+struct stat_avg
+  {
+    unsigned long	accu;
+    int			cnt;
+  };
+
+static struct stat_avg stat_avg_wait, stat_avg_childs, stat_avg_sleep, stat_avg_run, stat_avg_step;
+
+#define	USAGE	"Usage: timestart [options] min max fromsec tosec program [args..] 3>log\r\n" \
   "		Version " TIMESTART_VERSION " compiled " __DATE__ "\r\n" \
   "	Start min to max programs in parallel, delay from-to seconds between calls.\r\n" \
   "	If program returns FALSE then wait the maximum delay until spawning the next one,\r\n" \
@@ -42,11 +71,26 @@ static int	iofd;
   "	This program currently has no options.\r\n"			\
   "	Signals:\r\n"							\
   "		SIGHUP	Wait for running childs, then terminate\r\n"	\
-  "		SIGUSR1	Suspend forking childs\r\n"	\
+  "		SIGUSR1	Suspend forking childs\r\n"			\
   "		SIGUSR2	Continue forking / fork a child now\r\n"	\
+  "		SIGWINCH Print statistics to stderr\r\n"		\
 
 
-void
+static void
+avg(struct stat_avg *avg, int delta)
+{
+  if (delta<0)
+    return;
+
+  if (avg->cnt<100)
+    avg->cnt++;
+  else
+    avg->accu = avg->accu * (avg->cnt-1) / avg->cnt;
+
+  avg->accu += delta;
+}
+
+static void
 write_all(int fd, const void *_s, size_t len)
 { 
   const unsigned char *s=_s;
@@ -59,14 +103,14 @@ write_all(int fd, const void *_s, size_t len)
       break;
 }
 
-void
+static void
 ioflush(void)
 {
   write_all(iofd, iobuf, iofill);	/* ignore error	*/
   iofill	= 0;
 }
 
-void
+static void
 ioset(int fd)
 {
   if (iofd!=fd)
@@ -74,7 +118,7 @@ ioset(int fd)
   iofd	= fd;
 }
 
-void
+static void
 ioc(char c)
 {
   if (iofill>=sizeof iobuf)
@@ -82,14 +126,14 @@ ioc(char c)
   iobuf[iofill++]	= c;
 }
 
-void
+static void
 ios(const char *s)
 {
   while (*s)
     ioc(*s++);
 }
 
-void
+static void
 ionl(void)
 {
   ioc('\r');
@@ -97,13 +141,13 @@ ionl(void)
   ioflush();
 }
 
-void
+static void
 iox(int x)
 {
   ioc("0123456789abcdef"[x]);
 }
 
-void
+static void
 ioul(unsigned long u)
 {
   if (u>9ull)
@@ -111,7 +155,7 @@ ioul(unsigned long u)
   iox(u%10);
 }
 
-void
+static void
 iouln(unsigned long u, int n)
 {
   if (n>1)
@@ -122,19 +166,19 @@ iouln(unsigned long u, int n)
   ioul(u);
 }
 
-void
+static void
 ioul2(unsigned long u)
 {
   iouln(u, 2);
 }
 
-void
+static void
 ioul4(unsigned long u)
 {
   iouln(u, 4);
 }
 
-void
+static void
 ioxl(unsigned long u)
 {
   if (u>15ull)
@@ -142,16 +186,38 @@ ioxl(unsigned long u)
   iox(u&15);
 }
 
+#define IOUL(x) ioul((unsigned long)(x))
+
+static void
+iorate(unsigned long val, int div)
+{
+  if (div<=0)
+    {
+      ios("---");
+      return;
+    }
+  ioul(val / div);
+  ioc('.');
+  ioul2( (val % div ) * 100 / div );
+}
+
+static void
+ioavg(struct stat_avg *st)
+{
+  iorate(st->accu, st->cnt);
+}
+
+
 /****************************************************************/
 
-void
+static void
 err(const char *s)
 {
   ioset(2);
   ios(s);
 }
 
-void
+static void
 ex(const char *s)
 {
   ioset(2);
@@ -160,11 +226,12 @@ ex(const char *s)
   exit(1);
 }
 
-void
+static void
 oops(const char *s)
 {
   int		e=errno;
 
+  stat_oops++;
   ioset(2);
   ios(s);
   ios(": ");
@@ -172,7 +239,7 @@ oops(const char *s)
   ionl();
 }
 
-void
+static void
 blog(void)
 {
   time_t	tim;
@@ -195,9 +262,15 @@ blog(void)
   ioc(' ');
 }
 
+static void
+slog(void)
+{
+  ioset(2);
+}
+
 /****************************************************************/
 
-unsigned long
+static unsigned long
 getul(const char *s)
 {
   char *end;
@@ -213,6 +286,13 @@ getul(const char *s)
 /****************************************************************/
 
 static int hup_received = 0;
+static int winch_received = 0;
+
+static void
+winch_handler(int ign)
+{
+  winch_received	= 1;
+}
 
 static void
 hup_handler(int ign)
@@ -241,7 +321,7 @@ sa(int sig, void (*handler)(int))
 {
   struct sigaction sa;
 
-  memset(&sa, sizeof sa, 0);
+  memset(&sa, 0, sizeof sa);
   sa.sa_handler	= handler;
   if (sigaction(sig, &sa, NULL))
     {
@@ -252,7 +332,7 @@ sa(int sig, void (*handler)(int))
 
 /****************************************************************/
 
-void
+static void
 forker(char **args)
 {
   pid_t		pid;
@@ -270,7 +350,10 @@ forker(char **args)
       return;
     }
 
+  stat_forks++;
   nchilds++;
+  if (nchilds>stat_max_childs)
+    stat_max_childs = nchilds;
   chl		= malloc(sizeof *chl);
   if (!chl)
     {
@@ -278,17 +361,18 @@ forker(char **args)
       return;
     }
   chl->pid	= pid;
+  time(&chl->start);
   chl->next	= 0;
   *lastchl	= chl;
   lastchl	= &chl->next;
 
   blog();
   ios("forked ");
-  ioul((unsigned long)pid);
+  IOUL(pid);
   ionl();
 }
 
-void
+static void
 sleeper(unsigned long delay)
 {
   if (hup_received)
@@ -318,7 +402,7 @@ alrm_handler(int ign)
  * 0	if a child came back without error (returns true)
  * 1	if a child came back with error (returs false or other error)
  */
-int
+static int
 waiter(int seconds, int hang)
 {
   int	flag, bugs;
@@ -348,7 +432,10 @@ waiter(int seconds, int hang)
 	  if (seconds<=0)
 	    return -1;		/* artificial timeout	*/
 	  alarm(seconds);
- 	}
+	  avg(&stat_avg_wait, seconds);
+	}
+      avg(&stat_avg_childs, nchilds);
+      stat_waits++;
       got	= waitpid((pid_t)-1, &st, flag);
       if (!flag && !hang)
 	alarm(0);
@@ -360,6 +447,7 @@ waiter(int seconds, int hang)
 	      if (nchilds)
 		ex("internal error, lost a child");
 
+	      stat_no_childs++;
 	      /* In case of no childs, simulate a timeout
 	       */
 	      sleeper(seconds);
@@ -369,7 +457,7 @@ waiter(int seconds, int hang)
 	  continue;
 	}
       if (got==(pid_t)-1)
-        {
+	{
 	  if (errno!=EINTR)
 	    oops("waitpid");
 	  else
@@ -382,11 +470,15 @@ waiter(int seconds, int hang)
 
       blog();
       ios("child ");
-      ioul((unsigned long)got);
+      IOUL(got);
       ios(" ret ");
       ioxl((unsigned long)st);
 
-      if (WIFSTOPPED(st) || WIFCONTINUED(st))
+      if (WIFSTOPPED(st)
+#ifdef WIFCONTINUED
+	  || WIFCONTINUED(st)
+#endif
+	  )
 	{
 	  ionl();
 	  continue;
@@ -394,12 +486,24 @@ waiter(int seconds, int hang)
       for (last= &childs; (chl= *last)!=0; last= &chl->next)
 	if (chl->pid==got)
 	  {
+	    time_t now;
+
 	    if ((*last=chl->next)==0)
 	      lastchl	= last;
+	    time(&now);
+	    avg(&stat_avg_run, now-chl->start);
 	    free(chl);
 	    nchilds--;
 	    ionl();
-	    return !(WIFEXITED(st)) || (WEXITSTATUS(st))!=0;
+	    if (!WIFEXITED(st))
+	      {
+		stat_kill++;
+		return 1;
+	      }
+	    if (WEXITSTATUS(st))
+	      return 1;
+	    stat_success++;
+	    return 0;
 	  }
       ios(" (not found)");
       ionl();
@@ -408,11 +512,26 @@ waiter(int seconds, int hang)
 
 /****************************************************************/
 
+static void
+dump_childs(time_t now)
+{
+  struct childs *chl;
+
+  for (chl=childs; chl; chl=chl->next)
+    {
+      ioc(' ');
+      IOUL(now-chl->start);
+      ioc('/');
+      IOUL(chl->pid);
+    }
+  ionl();
+}
+
 int
 main(int argc, char **argv)
 {
   unsigned long	min, max, from, to, step, hang;
-  time_t	last;
+  time_t	last, was;
   int		delta;
 
   if (argc<5)
@@ -433,6 +552,9 @@ main(int argc, char **argv)
   sa(SIGHUP, hup_handler);
   sa(SIGUSR1, usr1_handler);
   sa(SIGUSR2, usr2_handler);
+  sa(SIGWINCH, winch_handler);
+
+  was	= time(&stat_start);
 
   last	= 0;
   step	= 0;
@@ -449,11 +571,17 @@ main(int argc, char **argv)
       if (step>to)
 	step	= to;
 
+      time(&now);
+      avg(&stat_avg_sleep, now-was);
+      if (now!=was)
+	{
+	  avg(&stat_avg_step, step);
+	}
+      was = now;
       if (delta<0)
 	{
 	  time_t	tmp;
 
-	  time(&now);
 	  /* time_t could be an unsigned type which does not fit into delta,
 	   * so we must use compare to detect the negative case.
 	   * Also assume that only + is a safe operation against time_t.
@@ -461,6 +589,39 @@ main(int argc, char **argv)
 	  tmp	= last+step;
 	  delta	= tmp<=now ? 0 : tmp-now;
 	}
+
+      if (winch_received)
+        {
+	  winch_received = 0;
+	  slog();
+	  ionl();
+	  ios("STAT");
+          ios(" running: ");		IOUL(now-stat_start);
+	  ios("s loops ");		IOUL(stat_waits);
+	  ios(" excess ");		IOUL(stat_timeouts);
+	  ios(" oops ");		IOUL(stat_oops);
+	  ionl();
+	  ios("STAT");
+	  ios(" childs:");
+	  ios(" forked ");		IOUL(stat_forks);
+	  ios(" ok ");			IOUL(stat_success);
+	  ios(" sig ");			IOUL(stat_kill);
+	  ios(" / none ");		IOUL(stat_no_childs);
+	  ios(" max ");			IOUL(stat_max_childs);
+	  ios(" full ");		IOUL(stat_full_childs);
+	  ionl();
+	  ios("STAT");
+	  ios(" avg:");
+	  ios(" childs ");		ioavg(&stat_avg_childs);
+	  ios(" wait ");		ioavg(&stat_avg_wait);
+	  ios(" sleep ");		ioavg(&stat_avg_sleep);
+	  ios(" step ");		ioavg(&stat_avg_step);
+	  ios(" run ");			ioavg(&stat_avg_run);
+	  ionl();
+	  ios("STAT");
+	  ios(" s/PID:");
+	  dump_childs(now);
+        }
 
       /* Note that for immediate_received there may be a race here.
        *
@@ -471,17 +632,17 @@ main(int argc, char **argv)
       ios("childs ");
       ioul(nchilds);
       ios(" step ");
-      ioul((unsigned long)step);
+      IOUL(step);
       ios(" sleep ");
-      ioul((unsigned long)delta);
+      IOUL(delta);
       ios(" block ");
-      ioul((unsigned long)hang);
+      IOUL(hang);
       ios(" hup/usr1/2 ");
-      ioul((unsigned long)hup_received);
+      IOUL(hup_received);
       ioc('/');
-      ioul((unsigned long)suspend_received);
+      IOUL(suspend_received);
       ioc('/');
-      ioul((unsigned long)immediate_received);
+      IOUL(immediate_received);
       ionl();
 
       ret	= waiter(immediate_received && !hup_received ? 0 : delta>to ? to : delta, hang);
@@ -489,9 +650,11 @@ main(int argc, char **argv)
 
       if (ret== -1)
 	{
+	  stat_timeouts++;
+
 	  /* On timeout fork off a new child
 	   */
-	  if ((!immediate_received && nchilds>=max) || hup_received || suspend_received)
+	  if ((!immediate_received && nchilds>=max && ++stat_full_childs) || hup_received || suspend_received)
 	    {
 	      /* If max childs are reached then wait until some child comes back.
 	       */
@@ -499,11 +662,22 @@ main(int argc, char **argv)
 	      delta	= to;
 	      continue;
 	    }
-	  
-	  forker(argv+5);
+
+	  /* now,last roles are reversed for a few lines to spare one assign	*/
+	  now = last;
 	  time(&last);
+
 	  if (immediate_received)
 	    immediate_received--;
+          else if (now+delta>last)
+	    {
+	      /* If childs are failing delta can be higher than step
+	       * so do not set it to -1, as setting it down is wrong.
+	       */
+	      delta -= last-now;
+	      continue;
+	    }
+	  forker(argv+5);
 
 	  /* Decrease the pace after forks.
 	   */
