@@ -1,3 +1,3 @@
-Bugfix release, also statistics on SIGWINCH added
+SIGWINCH now outputs what usually is output to FD3, too.
 
-SIGWINCH is a convenience feature.  Resize the terminal and you get a statistics for free ;)
+FD3 will not be used often.  So the output of the current status cannot be seen.  It now is included in SIGWINCH, for better on demand debugging purpose.

@@ -6,9 +6,11 @@
  * This source is optimized for diet.
  *
  * $Log$
+ * Revision 1.3  2011-12-23 12:19:19  tino
+ * Current state teporarily is output to FD2 on SIGWINCH.
+ *
  * Revision 1.2  2011-10-13 00:14:16  tino
  * Bugfix and minor improvements.  Statistics with SIGWINCH added
- *
  */
 
 #include <stdio.h>
@@ -590,8 +592,14 @@ main(int argc, char **argv)
 	  delta	= tmp<=now ? 0 : tmp-now;
 	}
 
+      /* In case blog() (FD3) is switched off,
+       * send the output to slog() (FD2) on SIGWINCH
+       */
+      blog();
       if (winch_received)
         {
+	  ios(" WINCH");
+	  ionl();
 	  winch_received = 0;
 	  slog();
 	  ionl();
@@ -628,7 +636,6 @@ main(int argc, char **argv)
        * If SIGUSR1 is received until the wait() call, it is ignored.
        * In that case it must be send a second time - then both fire.
        */
-      blog();
       ios("childs ");
       ioul(nchilds);
       ios(" step ");

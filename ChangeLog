@@ -1,3 +1,8 @@
+2011-12-23  Valentin Hilbig  <tino@zoo.03.softkill.net>
+
+	* timestart.c (main): on WINCH the current state which usually is
+	sent to FD3 now is sent to FD2, too, for better on-demand debugging.
+
 2011-10-13  Valentin Hilbig  <tino@zoo.03.softkill.net>
 
 	* timestart.c (sa): bug, wrong way to call memset, how was this possible?

@@ -89,12 +89,11 @@ to be able to run a script even when the limit on the commandline is
 reached.  So put that into the application logic which sends the signal.
 
 # $Log$
+# Revision 1.4  2011-12-23 12:19:19  tino
+# Current state teporarily is output to FD2 on SIGWINCH.
+#
 # Revision 1.3  2011-10-13 00:20:24  tino
-# Note added how to compile with diet, as  tinolib is not part of dist
+# Note added how to compile with diet, as tinolib is not part of dist
 #
 # Revision 1.2  2011-10-13 00:14:14  tino
 # Bugfix and minor improvements.  Statistics with SIGWINCH added
-#
-# Revision 1.1  2011-09-12 15:14:18  tino
-# first version
-#
